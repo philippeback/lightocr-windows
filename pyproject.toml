@@ -1,0 +1,16 @@
+[project]
+name = "lighton-ocr"
+version = "0.1.0"
+description = "OCR model for transcribing printed and handwritten text."
+requires-python = ">=3.9"
+
+[project.dependencies]
+torch = ">=2.0"
+transformers = ">=4.30"
+accelerate = ">=0.20"
+Pillow = ">=9.0"
+
+[tool.uv]
+dev-dependencies = [
+    "pytest",
+]
