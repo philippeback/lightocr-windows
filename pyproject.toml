@@ -2,16 +2,29 @@
 name = "lighton-ocr"
 version = "0.1.0"
 description = "OCR model for transcribing printed and handwritten text."
-requires-python = ">=3.9"
+requires-python = ">=3.13,<3.14"
 dependencies = [
-    "torch>=2.0",
+    "rocm[libraries,device-gfx1151]==10.1.0",
+    "torch[device-gfx1151]==2.14.0+rocm10.1.0",
+    "torchvision[device-gfx1151]==0.29.0a0+rocm10.1.0",
+    "torchaudio==2.11.0.3+rocm10.1.0",
     "transformers>=4.30",
     "accelerate>=0.20",
     "Pillow>=9.0",
-    "torchvision",
+]
+
+[dependency-groups]
+dev = [
+    "pytest",
 ]
 
 [tool.uv]
-dev-dependencies = [
-    "pytest",
+prerelease = "allow"
+environments = ["sys_platform == 'win32' and platform_machine == 'AMD64'"]
+override-dependencies = [
+    "triton; sys_platform == 'linux'",
 ]
+
+[[tool.uv.index]]
+name = "amd-rocm"
+url = "https://stable.repo.amd.com/rocm/whl-next/"

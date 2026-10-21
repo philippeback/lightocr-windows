@@ -2,7 +2,7 @@ from lightocr import LightOnOCR
 
 def main():
     ocr = LightOnOCR()
-    image_path = "sample.png"  # Replace with your image path
+    image_path = "C:/Users/Philippe Back/Pictures/Screenshots/Screenshot 2026-05-16 152443.png"  # Replace with your image path
 
     try:
         text = ocr.transcribe(image_path)
