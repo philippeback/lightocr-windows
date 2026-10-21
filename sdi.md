@@ -40,15 +40,15 @@ flowchart TD
         E --> D
     end
 
-    subgraphPre["Preprocessing & Multimodal Packing"]
-        B --> F["_preprocess(): RGB convert + LANCZOS thumbnail <=1024px"]
+    subgraph Pre["Preprocessing & Multimodal Packing"]
+        B --> F["_preprocess(): RGB convert + LANCZOS thumbnail (max 1024px)"]
         F --> G["processor.apply_chat_template(messages, add_generation_prompt=True)"]
-        G --> H["AutoProcessor(text, images) -> input_ids, attention_mask, pixel_values, image_grid_thw"]
+        G --> H["AutoProcessor(text, images): input_ids, attention_mask, pixel_values, image_grid_thw"]
     end
 
     subgraph Model["Qwen3_5ForConditionalGeneration (bfloat16 on ROCm GPU)"]
         H --> I["Vision Encoder (2D Axial RoPE + Patch Merger)"]
-        I -->|"Visual Embeddings"| J["Multimodal Token Scatter into <|image_pad|>"]
+        I -->|"Visual Embeddings"| J["Multimodal Token Scatter into image_pad tokens"]
         J --> K["Hybrid Decoder Prefill (Full Attention + torch_chunk_gated_delta_rule)"]
         K --> L["Autoregressive Decode Loop (torch_recurrent_gated_delta_rule + causal_conv1d_update)"]
     end
@@ -56,7 +56,7 @@ flowchart TD
     subgraph Guard["Decoding Guardrails & Post-Processing"]
         L -->|"Per-step input_ids"| M["_RepeatTokenStoppingCriteria (24x single / 16x pair)"]
         M -->|"Stop / EOS"| N["Slice prompt_len + processor.decode()"]
-        N --> O["Regex Block Cap (█ <= 40) + rstrip()"]
+        N --> O["Regex Block Cap (40 max) + rstrip()"]
     end
 ```
 
@@ -66,14 +66,14 @@ flowchart TD
 
 ### 3.1 Imperative vs. Declarative State Mismatch
 `uv` operates in two distinct modes:
-1. **Imperative (`uv pip install ...`):** Mutates `.venv/Lib/site-packages` directly without recording index URLs, extras, or version constraints in [`pyproject.toml`](file:///C:/Dev/github/philippeback/lighton-ocr/pyproject.toml) or `uv.lock`.
-2. **Declarative (`uv lock` / `uv sync` / `uv run`):** Computes a deterministic dependency graph from [`pyproject.toml`](file:///C:/Dev/github/philippeback/lighton-ocr/pyproject.toml), writes `uv.lock`, and reconciles `.venv` to match `uv.lock` before executing commands.
+1. **Imperative (`uv pip install ...`):** Mutates `.venv/Lib/site-packages` directly without recording index URLs, extras, or version constraints in [`pyproject.toml`](pyproject.toml) or `uv.lock`.
+2. **Declarative (`uv lock` / `uv sync` / `uv run`):** Computes a deterministic dependency graph from [`pyproject.toml`](pyproject.toml), writes `uv.lock`, and reconciles `.venv` to match `uv.lock` before executing commands.
 
-**Consequence:** If ROCm wheels are installed via `uv pip install --index-url https://stable.repo.amd.com/rocm/whl-next/ ...` while [`pyproject.toml`](file:///C:/Dev/github/philippeback/lighton-ocr/pyproject.toml) still declares generic `"torch>=2.0"`, the very next `uv run` or `uv sync` resolves `torch` from PyPI (`2.14.1+cpu`), **uninstalling the ROCm build and silently reverting the environment to CPU-only execution**.
+**Consequence:** If ROCm wheels are installed via `uv pip install --index-url https://stable.repo.amd.com/rocm/whl-next/ ...` while [`pyproject.toml`](pyproject.toml) still declares generic `"torch>=2.0"`, the very next `uv run` or `uv sync` resolves `torch` from PyPI (`2.14.1+cpu`), **uninstalling the ROCm build and silently reverting the environment to CPU-only execution**.
 
 ### 3.2 Three Resolution Pathologies on AMD's ROCm Wheel Index
 
-When migrating the AMD ROCm installation into [`pyproject.toml`](file:///C:/Dev/github/philippeback/lighton-ocr/pyproject.toml), three non-obvious resolver failures occur unless explicitly handled:
+When migrating the AMD ROCm installation into [`pyproject.toml`](pyproject.toml), three non-obvious resolver failures occur unless explicitly handled:
 
 #### Pathology 1: Pre-release Transitive Dependency Rejection
 * **Mechanism:** `torchvision[device-gfx1151]==0.29.0a0+rocm10.1.0` is an alpha version (`0.29.0a0`) that declares `Requires-Dist: amd-torchvision-device-gfx1151==0.29.0a0+rocm10.1.0 ; extra == "device-gfx1151"`.
@@ -128,7 +128,7 @@ When migrating the AMD ROCm installation into [`pyproject.toml`](file:///C:/Dev/
    ...
    ```
 
-#### Correct Multimodal Pipeline (Implemented in [`lightocr/engine.py`](file:///C:/Dev/github/philippeback/lighton-ocr/lightocr/engine.py))
+#### Correct Multimodal Pipeline (Implemented in [`lightocr/engine.py`](lightocr/engine.py))
 1. **Model Class:** Load via `Qwen3_5ForConditionalGeneration.from_pretrained(...)` so both the vision tower and language decoder are initialized.
 2. **Numerical Precision (`torch.bfloat16`):** Use `dtype=torch.bfloat16` rather than `torch.float16`. `bfloat16` preserves the 8-bit exponent range of `float32`, preventing activation/exponentiation overflow in the vision tower and Gated DeltaNet recurrent decay (`exp(cum_decay)`), while `transformers 5.x` standardizes on the `dtype=` keyword argument (deprecating `torch_dtype=`).
 3. **Chat Template Formatting:** `LightOnOCR-3-4B` is trained with Qwen3.5 multimodal chat markers (`<|im_start|>user\n<|vision_start|><|image_pad|><|vision_end|>...<|im_end|>\n<|im_start|>assistant\n`). Inputs must be constructed via:
@@ -158,7 +158,7 @@ When migrating the AMD ROCm installation into [`pyproject.toml`](file:///C:/Dev/
 By default, `AutoProcessor.from_pretrained(model_id)` and `PreTrainedModel.from_pretrained(model_id)` issue 7+ synchronous HTTP `GET`/`HEAD` requests to `https://huggingface.co/api/models/...` on every startup to check for remote revision updates and `additional_chat_templates`.
 
 To eliminate network latency and allow fully offline operation once weights are cached:
-* [`LightOnOCR.__init__`](file:///C:/Dev/github/philippeback/lighton-ocr/lightocr/engine.py#L46-L86) attempts `from_pretrained(..., local_files_only=True)` first when `local_files_only=None`.
+* [`LightOnOCR.__init__`](lightocr/engine.py#L46-L86) attempts `from_pretrained(..., local_files_only=True)` first when `local_files_only=None`.
 * If all files exist in `~/.cache/huggingface/hub`, initialization completes with **zero HTTP requests**.
 * If `OSError` is raised (cache miss on first run), it logs a message and falls back to `local_files_only=False`.
 
@@ -220,7 +220,7 @@ When PyTorch invokes `nn.Conv1d` on ROCm during the first forward pass, MIOpen p
 ```text
 MIOpen: Warning [ParseAndLoadDb] File is unreadable: "...\gfx115128.HIP.fdb.txt"
 ```
-and falls back to its internal kernel heuristics. Setting `os.environ.setdefault("MIOPEN_LOG_LEVEL", "3")` in [`lightocr/engine.py`](file:///C:/Dev/github/philippeback/lighton-ocr/lightocr/engine.py#L6) before `import torch` restricts MIOpen logging to errors only.
+and falls back to its internal kernel heuristics. Setting `os.environ.setdefault("MIOPEN_LOG_LEVEL", "3")` in [`lightocr/engine.py`](lightocr/engine.py#L6) before `import torch` restricts MIOpen logging to errors only.
 
 ---
 
@@ -234,7 +234,7 @@ When transcribing terminal screenshots containing ASCII/Unicode progress bars (e
 4. **Latency Impact:** On a screenshot with only ~150 tokens of real code/text, generating 1,900 extra tokens of `█` **inflates total inference time by >10x** (spending >90% of GPU compute time on useless block characters).
 
 ### 6.2 `_RepeatTokenStoppingCriteria` Design
-To terminate degenerate loops immediately without harming legitimate text or code indentation, [`_RepeatTokenStoppingCriteria`](file:///C:/Dev/github/philippeback/lighton-ocr/lightocr/engine.py#L22-L44) monitors the tail of `input_ids` after `prompt_length` at every decoding step:
+To terminate degenerate loops immediately without harming legitimate text or code indentation, [`_RepeatTokenStoppingCriteria`](lightocr/engine.py#L22-L44) monitors the tail of `input_ids` after `prompt_length` at every decoding step:
 
 1. **Single-Token Run-Length Invariant (`max_single_repeats = 24`):**
    $$\forall i \in [L - 24, L - 1], \quad \text{token}_i = \text{token}_{L-1} \implies \text{STOP}$$
@@ -255,12 +255,12 @@ To terminate degenerate loops immediately without harming legitimate text or cod
 
 | File | Responsibility |
 | :--- | :--- |
-| [`pyproject.toml`](file:///C:/Dev/github/philippeback/lighton-ocr/pyproject.toml) | Declarative `uv` configuration pinning ROCm 10.1.0 `gfx1151` packages, `amd-rocm` index, `prerelease = "allow"`, Windows x64 `environments`, and Linux-scoped `triton` override. |
-| [`lightocr/engine.py`](file:///C:/Dev/github/philippeback/lighton-ocr/lightocr/engine.py) | Core [`LightOnOCR`](file:///C:/Dev/github/philippeback/lighton-ocr/lightocr/engine.py#L47-L163) wrapper: silences MIOpen/hub_kernels noise, implements offline-first model loading (`Qwen3_5ForConditionalGeneration` in `bfloat16`), Pillow 10+ `LANCZOS` image preprocessing, multimodal chat template formatting, and [`_RepeatTokenStoppingCriteria`](file:///C:/Dev/github/philippeback/lighton-ocr/lightocr/engine.py#L22-L44). |
-| [`lightocr/utils.py`](file:///C:/Dev/github/philippeback/lighton-ocr/lightocr/utils.py) | Path validation ([`validate_image_path`](file:///C:/Dev/github/philippeback/lighton-ocr/lightocr/utils.py#L5-L9)) and scoped `lightocr` package logger (preventing root logger `INFO:httpx2:` spam). |
-| [`rocm-check.py`](file:///C:/Dev/github/philippeback/lighton-ocr/rocm-check.py) | Diagnostic CLI script verifying PyTorch version (`2.14.0+rocm10.1.0`), ROCm/HIP version (`7.16.26385`), and GPU device (`AMD Radeon(TM) 8060S Graphics`). |
-| [`example_usage.py`](file:///C:/Dev/github/philippeback/lighton-ocr/example_usage.py) | End-to-end OCR transcription entrypoint. |
-| [`doc/getting-amd-torch-to-work.md`](file:///C:/Dev/github/philippeback/lighton-ocr/doc/getting-amd-torch-to-work.md) | Focused operational guide for setting up and verifying AMD ROCm PyTorch with `uv`. |
+| [`pyproject.toml`](pyproject.toml) | Declarative `uv` configuration pinning ROCm 10.1.0 `gfx1151` packages, `amd-rocm` index, `prerelease = "allow"`, Windows x64 `environments`, and Linux-scoped `triton` override. |
+| [`lightocr/engine.py`](lightocr/engine.py) | Core [`LightOnOCR`](lightocr/engine.py#L47-L163) wrapper: silences MIOpen/hub_kernels noise, implements offline-first model loading (`Qwen3_5ForConditionalGeneration` in `bfloat16`), Pillow 10+ `LANCZOS` image preprocessing, multimodal chat template formatting, and [`_RepeatTokenStoppingCriteria`](lightocr/engine.py#L22-L44). |
+| [`lightocr/utils.py`](lightocr/utils.py) | Path validation ([`validate_image_path`](lightocr/utils.py#L5-L9)) and scoped `lightocr` package logger (preventing root logger `INFO:httpx2:` spam). |
+| [`rocm-check.py`](rocm-check.py) | Diagnostic CLI script verifying PyTorch version (`2.14.0+rocm10.1.0`), ROCm/HIP version (`7.16.26385`), and GPU device (`AMD Radeon(TM) 8060S Graphics`). |
+| [`example_usage.py`](example_usage.py) | End-to-end OCR transcription entrypoint. |
+| [`doc/getting-amd-torch-to-work.md`](doc/getting-amd-torch-to-work.md) | Focused operational guide for setting up and verifying AMD ROCm PyTorch with `uv`. |
 
 ---
 
@@ -271,4 +271,4 @@ To terminate degenerate loops immediately without harming legitimate text or cod
 2. **Weight-Only Quantization (`torchao` int8 / int4):**
    Because the Radeon 8060S (`gfx1151`) is memory-bandwidth bound during `batch_size=1` autoregressive decoding over LPDDR5X unified memory, quantizing linear projections from `bfloat16` (16 bits/weight) to `int8` or `int4` cuts memory read traffic by 2–4x, narrowing the gap with `llama.cpp` GGUF models.
 3. **Windows Triton Support on ROCm:**
-   Once AMD publishes `win_amd64` wheels for `triton` on `https://stable.repo.amd.com/rocm/whl-next/`, removing the `override-dependencies` constraint and adding `flash-linear-attention` to [`pyproject.toml`](file:///C:/Dev/github/philippeback/lighton-ocr/pyproject.toml) will automatically activate Tier-2 fused Triton kernels for both `chunk_gated_delta_rule` and `fused_recurrent_gated_delta_rule`.
+   Once AMD publishes `win_amd64` wheels for `triton` on `https://stable.repo.amd.com/rocm/whl-next/`, removing the `override-dependencies` constraint and adding `flash-linear-attention` to [`pyproject.toml`](pyproject.toml) will automatically activate Tier-2 fused Triton kernels for both `chunk_gated_delta_rule` and `fused_recurrent_gated_delta_rule`.
