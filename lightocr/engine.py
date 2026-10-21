@@ -68,6 +68,9 @@ class LightOnOCR:
         """
         image = self._preprocess(image_input)
         inputs = self.processor(images=image, return_tensors="pt")
+        # Remove keys that are not expected by generate
+        inputs.pop("image_grid_thw", None)
+        print(f"DEBUG: inputs keys: {inputs.keys()}")
 
         with torch.no_grad():
             outputs = self.model.generate(**inputs, max_new_tokens=512)
