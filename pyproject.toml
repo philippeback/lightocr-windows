@@ -8,6 +8,7 @@ dependencies = [
     "transformers>=4.30",
     "accelerate>=0.20",
     "Pillow>=9.0",
+    "torchvision",
 ]
 
 [tool.uv]
